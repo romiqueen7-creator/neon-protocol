@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON PROTOCOL v2.1 | Tactical Sim</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Jura:wght@400;700&display=swap');
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #080808;
+            font-family: 'Jura', sans-serif;
+            user-select: none;
+        }
+
+        /* UI LAYER */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .hud-panel {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .bar-label { font-size: 12px; color: #888; letter-spacing: 1px; }
+
+        .bar-container {
+            width: 200px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            margin-bottom: 5px;
+        }
+
+        #health-bar { width: 100%; height: 100%; background: #00e5ff; transition: width 0.1s; box-shadow: 0 0 8px #00e5ff; }
+        #stamina-bar { width: 100%; height: 100%; background: #d4af37; transition: width 0.1s; }
+
+        #weapon-info {
+            color: #fff;
+            font-size: 20px;
+            margin-bottom: 5px;
+            text-shadow: 0 0 5px rgba(255,255,255,0.3);
+        }
+        #ammo-counter { font-size: 14px; color: #aaa; }
+
+        #top-hud {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            text-align: right;
+        }
+        h1 { margin: 0; font-size: 16px; color: #555; letter-spacing: 3px; }
+        #score { font-size: 36px; color: #d4af37; font-weight: bold; }
+
+        /* MODAL */
+        #modal {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(15, 15, 15, 0.98);
+            padding: 50px;
+            border: 1px solid #333;
+            text-align: center;
+            pointer-events: auto;
+            border-top: 3px solid #d4af37;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+        }
+        button {
+            background: transparent;
+            border: 1px solid #d4af37;
+            color: #d4af37;
+            padding: 12px 30px;
+            font-family: 'Jura', sans-serif;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        button:hover { background: #d4af37; color: #000; }
+        
+        /* Controls Guide */
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            text-align: right;
+            color: #444;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        b { color: #888; }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div id="top-hud">
+            <h1>SIMULATION SCORE</h1>
+            <div id="score">0</div>
+        </div>
+        <div class="hud-panel">
+            <div id="weapon-info">TACTICAL PISTOL</div>
+            <div id="ammo-counter">12 / ∞</div>
+            
+            <div class="bar-label">INTEGRITY</div>
+            <div class="bar-container"><div id="health-bar"></div></div>
+            
+            <div class="bar-label">FOCUS (STAMINA)</div>
+            <div class="bar-container"><div id="stamina-bar"></div></div>
+        </div>
+        <div id="controls">
+            <b>WASD</b> MOVE <br>
+            <b>L-CLICK</b> ENGAGE <br>
+            <b>SPACE</b> DODGE ROLL <br>
+            <b>1 / 2</b> SWITCH LOADOUT
+        </div>
+    </div>
+
+    <div id="modal">
+        <h2 style="color: #fff; font-weight: normal; letter-spacing: 4px; margin-bottom: 10px;">DISCONNECTED</h2>
+        <p style="color: #666; font-size: 12px; margin-bottom: 30px;">SIMULATION FAILED. TARGET LOST.</p>
+        <button onclick="restartGame()">RESTART SEQUENCE</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- GAME CONFIG ---
+        let gameActive = true;
+        let score = 0;
+        let frame = 0;
+        
+        const keys = { w: false, a: false, s: false, d: false, " ": false };
+        const mouse = { x: 0, y: 0 };
+
+        window.addEventListener('keydown', e => { 
+            if(keys.hasOwnProperty(e.key)) keys[e.key] = true; 
+            if(e.key === '1') player.switchWeapon(0);
+            if(e.key === '2') player.switchWeapon(1);
+            if(e.key === ' ' && !player.dodging) player.dodge();
+        });
+        window.addEventListener('keyup', e => { if(keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+        window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+        window.addEventListener('mousedown', () => player.shoot());
+
+        // --- UTILS ---
+        function circleRectIntersect(circle, rect) {
+            let distX = Math.abs(circle.x - rect.x - rect.w/2);
+            let distY = Math.abs(circle.y - rect.y - rect.h/2);
+
+            if (distX > (rect.w/2 + circle.radius)) { return false; }
+            if (distY > (rect.h/2 + circle.radius)) { return false; }
+
+            if (distX <= (rect.w/2)) { return true; } 
+            if (distY <= (rect.h/2)) { return true; }
+
+            let dx = distX - rect.w/2;
+            let dy = distY - rect.h/2;
+            return (dx*dx + dy*dy <= (circle.radius*circle.radius));
+        }
+
+        // --- CLASSES ---
+
+        class Wall {
+            constructor(x, y, w, h) {
+                this.x = x; this.y = y; this.w = w; this.h = h;
+            }
+            draw() {
+                ctx.fillStyle = '#111';
+                ctx.fillRect(this.x, this.y, this.w, this.h);
+                ctx.strokeStyle = '#333';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x, this.y, this.w, this.h);
+                // Top accent
+                ctx.fillStyle = '#222';
+                ctx.fillRect(this.x, this.y - 10, this.w, 10);
+            }
+        }
+
+        class Player {
+            constructor() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.radius = 18;
+                this.speed = 3.5;
+                this.health = 100;
+                this.stamina = 100;
+                this.dodging = false;
+                this.reloading = false;
+                this.muzzleFlashTimer = 0; // Timer for muzzle flash
+
+                this.weapons = [
+                    { name: "TACTICAL PISTOL", fireRate: 20, damage: 25, spread: 0.05, ammo: 12, maxAmmo: 12, color: '#00e5ff', length: 15 },
+                    { name: "VECTOR SMG", fireRate: 5, damage: 12, spread: 0.25, ammo: 30, maxAmmo: 30, color: '#ff0055', length: 25 }
+                ];
+                this.currentWeaponIdx = 0;
+                this.lastShot = 0;
+            }
+
+            get weapon() { return this.weapons[this.currentWeaponIdx]; }
+
+            switchWeapon(idx) {
+                if (this.currentWeaponIdx !== idx) {
+                    this.currentWeaponIdx = idx;
+                    this.reloading = false;
+                    updateHUD();
+                }
+            }
+
+            dodge() {
+                if (this.stamina >= 30) {
+                    this.dodging = true;
+                    this.stamina -= 30;
+                    for(let i=0; i<5; i++) particles.push(new Particle(this.x, this.y, '#fff', 2));
+                    const originalSpeed = this.speed;
+                    this.speed = 10; 
+                    setTimeout(() => {
+                        this.speed = originalSpeed;
+                        this.dodging = false;
+                    }, 250);
+                }
+            }
+
+            update() {
+                if (this.stamina < 100) this.stamina += 0.5;
+                if (this.muzzleFlashTimer > 0) this.muzzleFlashTimer--;
+
+                let dx = 0; let dy = 0;
+                if (keys.w) dy -= this.speed;
+                if (keys.s) dy += this.speed;
+                if (keys.a) dx -= this.speed;
+                if (keys.d) dx += this.speed;
+
+                let nextX = this.x + dx;
+                let nextY = this.y + dy;
+
+                walls.forEach(wall => {
+                    if (circleRectIntersect({x: nextX, y: this.y, radius: this.radius}, wall)) dx = 0;
+                    if (circleRectIntersect({x: this.x, y: nextY, radius: this.radius}, wall)) dy = 0;
+                });
+
+                this.x += dx;
+                this.y += dy;
+                this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
+                this.y = Math.max(this.radius, Math.min(canvas.height - this.radius, this.y));
+
+                if (this.weapon.ammo <= 0 && !this.reloading) {
+                    this.startReload();
+                }
+            }
+
+            startReload() {
+                this.reloading = true;
+                updateHUD();
+                setTimeout(() => {
+                    this.weapon.ammo = this.weapon.maxAmmo;
+                    this.reloading = false;
+                    updateHUD();
+                }, 1200);
+            }
+
+            shoot() {
+                if (this.reloading || !gameActive) return;
+                if (frame - this.lastShot < this.weapon.fireRate) return;
+
+                if (this.weapon.ammo > 0) {
+                    this.lastShot = frame;
+                    this.weapon.ammo--;
+                    this.muzzleFlashTimer = 3; // Show flash for 3 frames
+
+                    const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+                    const spread = (Math.random() - 0.5) * this.weapon.spread;
+                    const finalAngle = angle + spread;
+
+                    const velocity = {
+                        x: Math.cos(finalAngle) * 18,
+                        y: Math.sin(finalAngle) * 18
+                    };
+                    
+                    projectiles.push(new Projectile(this.x, this.y, velocity, this.weapon.color));
+                    this.x -= velocity.x * 0.1;
+                    this.y -= velocity.y * 0.1;
+                    updateHUD();
+                }
+            }
+
+            draw() {
+                const angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(angle);
+
+                // Suit
+                ctx.fillStyle = this.dodging ? '#555' : '#111';
+                ctx.beginPath(); ctx.roundRect(-20, -16, 40, 32, 8); ctx.fill();
+
+                // Head & Hair
+                ctx.fillStyle = '#f1c27d';
+                ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+                ctx.fillStyle = '#000';
+                ctx.beginPath(); ctx.arc(-2, 0, 11, 0, Math.PI * 2); ctx.fill();
+
+                // Arms & Weapon
+                ctx.fillStyle = '#111';
+                ctx.fillRect(5, 8, 20, 6); ctx.fillRect(5, -14, 20, 6);
+                
+                ctx.fillStyle = '#444';
+                ctx.fillRect(20, -4, this.weapon.length, 8);
+
+                // Muzzle Flash Effect
+                if (this.muzzleFlashTimer > 0) {
+                    ctx.fillStyle = this.weapon.color;
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = this.weapon.color;
+                    ctx.beginPath();
+                    const tipX = 20 + this.weapon.length;
+                    ctx.moveTo(tipX, 0);
+                    ctx.lineTo(tipX + 20, -10);
+                    ctx.lineTo(tipX + 25, 0);
+                    ctx.lineTo(tipX + 20, 10);
+                    ctx.fill();
+                    ctx.shadowBlur = 0; // Reset shadow
+                }
+
+                ctx.restore();
+
+                if (this.reloading) {
+                    ctx.fillStyle = '#fff'; ctx.font = '10px Jura';
+                    ctx.fillText("RELOADING...", this.x - 25, this.y - 30);
+                }
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, velocity, color) {
+                this.x = x; this.y = y; this.velocity = velocity;
+                this.radius = 3; this.color = color; this.active = true;
+            }
+            update() {
+                this.x += this.velocity.x; this.y += this.velocity.y;
+                walls.forEach(wall => {
+                    if (circleRectIntersect(this, wall)) {
+                        this.active = false;
+                        for(let i=0; i<3; i++) particles.push(new Particle(this.x, this.y, '#ccc', 1));
+                    }
+                });
+            }
+            draw() {
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color; ctx.fill();
+                ctx.shadowBlur = 10; ctx.shadowColor = this.color; ctx.fill(); ctx.shadowBlur = 0;
+            }
+        }
+
+        class Enemy {
+            constructor() {
+                let spawnOk = false;
+                while(!spawnOk) {
+                    this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height;
+                    const dist = Math.hypot(player.x - this.x, player.y - this.y);
+                    if (dist > 400) spawnOk = true;
+                }
+                this.radius = 18; this.hp = 30; this.speed = 2 + Math.random();
+            }
+            update() {
+                let angle = Math.atan2(player.y - this.y, player.x - this.x);
+                let dx = Math.cos(angle) * this.speed; let dy = Math.sin(angle) * this.speed;
+                let nextX = this.x + dx; let nextY = this.y + dy;
+                walls.forEach(wall => {
+                    if (circleRectIntersect({x: nextX, y: this.y, radius: this.radius}, wall)) dx = 0;
+                    if (circleRectIntersect({x: this.x, y: nextY, radius: this.radius}, wall)) dy = 0;
+                });
+                this.x += dx; this.y += dy;
+            }
+            draw() {
+                const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(angle);
+                
+                // Suit & Tie
+                ctx.fillStyle = '#222'; ctx.beginPath(); ctx.roundRect(-20, -16, 40, 32, 8); ctx.fill();
+                ctx.fillStyle = '#800'; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(4, 10); ctx.lineTo(-4, 10); ctx.fill();
+                
+                // Head
+                ctx.fillStyle = '#e0ac69'; ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
+
+                // Sunglasses (New)
+                ctx.fillStyle = '#000';
+                ctx.fillRect(4, -5, 7, 4); // Top lens
+                ctx.fillRect(4, 1, 7, 4);  // Bottom lens
+
+                ctx.restore();
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color, speedScale) {
+                this.x = x; this.y = y; this.color = color;
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * speedScale;
+                this.vel = { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed };
+                this.alpha = 1; this.size = Math.random() * 3;
+            }
+            update() { this.x += this.vel.x; this.y += this.vel.y; this.alpha -= 0.05; }
+            draw() {
+                ctx.save(); ctx.globalAlpha = this.alpha; ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size); ctx.restore();
+            }
+        }
+
+        // --- INIT ---
+        const player = new Player();
+        const walls = [];
+        const projectiles = [];
+        const enemies = [];
+        const particles = [];
+
+        function generateMap() {
+            walls.push(new Wall(200, 200, 20, 300)); walls.push(new Wall(500, 100, 300, 20));
+            walls.push(new Wall(800, 400, 20, 200)); walls.push(new Wall(300, 600, 400, 20));
+            for(let i=0; i<5; i++) {
+                walls.push(new Wall(Math.random() * (canvas.width-100), Math.random() * (canvas.height-100), 60, 60));
+            }
+        }
+        generateMap();
+
+        function updateHUD() {
+            document.getElementById('score').innerText = score;
+            const w = player.weapon;
+            document.getElementById('weapon-info').innerText = w.name;
+            document.getElementById('weapon-info').style.color = w.color;
+            document.getElementById('ammo-counter').innerText = player.reloading ? "RELOADING..." : `${w.ammo} / ∞`;
+            document.getElementById('health-bar').style.width = `${player.health}%`;
+            document.getElementById('stamina-bar').style.width = `${player.stamina}%`;
+        }
+
+        function animate() {
+            if (!gameActive) return;
+            requestAnimationFrame(animate);
+            frame++;
+            
+            ctx.fillStyle = '#080808'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1; ctx.beginPath();
+            for(let x=0; x<canvas.width; x+=50) { ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); }
+            for(let y=0; y<canvas.height; y+=50) { ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); }
+            ctx.stroke();
+
+            walls.forEach(w => w.draw());
+            player.update(); player.draw();
+
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i]; p.update(); p.draw();
+                if (!p.active || p.x < 0 || p.x > canvas.width || p.y < 0 || p.y > canvas.height) projectiles.splice(i, 1);
+            }
+
+            if (frame % 120 === 0) enemies.push(new Enemy());
+
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const e = enemies[i]; e.update(); e.draw();
+                const distToPlayer = Math.hypot(player.x - e.x, player.y - e.y);
+                if (distToPlayer < player.radius + e.radius && !player.dodging) {
+                    player.health -= 1; updateHUD(); if(player.health <= 0) endGame();
+                }
+                projectiles.forEach((p, pIdx) => {
+                    const distToProj = Math.hypot(p.x - e.x, p.y - e.y);
+                    if (distToProj < e.radius + p.radius && p.active) {
+                        p.active = false; e.hp -= player.weapon.damage;
+                        for(let k=0; k<3; k++) particles.push(new Particle(e.x, e.y, '#00ff00', 3));
+                        if (e.hp <= 0) {
+                            enemies.splice(i, 1); score += 150;
+                            for(let k=0; k<10; k++) particles.push(new Particle(e.x, e.y, '#00e5ff', 5));
+                            updateHUD();
+                        }
+                    }
+                });
+            }
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const pt = particles[i]; pt.update(); pt.draw(); if (pt.alpha <= 0) particles.splice(i, 1);
+            }
+        }
+
+        function endGame() {
+            gameActive = false; document.getElementById('modal').style.display = 'block';
+        }
+
+        function restartGame() {
+            player.health = 100; player.stamina = 100; player.x = canvas.width/2; player.y = canvas.height/2;
+            score = 0; enemies.length = 0; projectiles.length = 0; gameActive = true;
+            document.getElementById('modal').style.display = 'none';
+            player.weapons.forEach(w => w.ammo = w.maxAmmo); updateHUD(); animate();
+        }
+
+        updateHUD(); animate();
+    </script>
+</body>
+</html>
